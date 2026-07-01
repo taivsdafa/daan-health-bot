@@ -15,7 +15,7 @@ TARGET_ID = "C5911e6bbf171871b3c0ea852e4a73324"
 # 🧠 全域狀態機與記憶體資料庫
 user_states = {}       
 user_locations = {}    
-last_locations = {}    # 💡 【新增】用來備份上一次的通報地點，防止取消時找不到地點
+last_locations = {}    # 💡 備份上一次的通報地點，防止 212 取消時找不到地點
 event_queue = queue.Queue()  
 historical_logs = []  
 
@@ -62,17 +62,26 @@ def process_event_worker():
                 
             # 階層三：記錄地點，等待分流代碼
             if user_states.get(user_id) == "WAITING_FOR_LOCATION":
+                # 💡 當使用者點選按鈕或輸入地點時，同時寫入主要區與備份區
                 user_locations[user_id] = user_message  
+                last_locations[user_id] = user_message
                 user_states[user_id] = "WAITING_FOR_201" 
                 event_queue.task_done()
                 continue
 
-            # 💡 【新增/重構】獨立處理：取消借輪椅的邏輯 (代碼設為 990)
-            if user_message == "990":
-                # 從備份記憶區撈出上一次的地點
-                old_loc = last_locations.get(user_id, "未知地點")
+            # 💡 【核心修正】獨立處理 212 取消借用輪椅 / 改為協助攙扶的邏輯
+            if user_message == "212":
+                # 先去抓剛剛存的地點（如果主要區沒了，就去備份區撈）
+                old_loc = user_locations.get(user_id)
+                if not old_loc:
+                    old_loc = last_locations.get(user_id, "未知地點")
+                
                 loc_header = f"地點:\n{old_loc}"
-                send_line_push(f"{loc_header}\n取消借用輪椅", user_id, "取消借用輪椅", custom_loc=old_loc)
+                send_line_push(f"{loc_header}\n傷患有意識但人不能過來\n會有人協助攙扶進健康中心\n(取消借用輪椅)", user_id, "有意識-協助攙扶(取消輪椅)", custom_loc=old_loc)
+                
+                # 執行完畢，清空該使用者的狀態
+                user_states.pop(user_id, None)
+                user_locations.pop(user_id, None)
                 event_queue.task_done()
                 continue
 
@@ -82,15 +91,13 @@ def process_event_worker():
             if user_message == "201" or user_message == "210" or user_message == "221":
                 pass
             elif user_message == "211":
-                # 💡 在刪除地點前，先複製一份到備份區（last_locations）
+                # 💡 在刪除地點前，確保備份區有留底
                 if user_id in user_locations:
                     last_locations[user_id] = user_locations[user_id]
                     
                 send_line_push(f"{loc_header}\n傷患有意識但人不能過來\n請備妥一個輪椅\n有人會過來拿", user_id, "有意識-需要輪椅")
-                user_states.pop(user_id, None); user_locations.pop(user_id, None)
-            elif user_message == "212":
-                send_line_push(f"{loc_header}\n傷患有意識但人不能過來\n會有人協助攙扶進健康中心", user_id, "有意識-協助攙扶")
-                user_states.pop(user_id, None); user_locations.pop(user_id, None)
+                user_states.pop(user_id, None)
+                user_locations.pop(user_id, None)
             elif user_message == "220":
                 send_line_push(f"{loc_header}\n有人無意識\n請立即前往", user_id, "第一階段：有人無意識通報")
             elif user_message == "222":
